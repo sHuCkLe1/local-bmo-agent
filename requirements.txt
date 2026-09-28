@@ -1,0 +1,15 @@
+# BMO's Python packages. Install with:
+#     python -m pip install -r requirements.txt
+#
+# All of these are optional: without them BMO still runs as a text chat.
+# Tested with Python 3.12 on Windows 11 (some packages may not have wheels
+# for the newest Python yet).
+
+# voice in: offline speech recognition + microphone
+faster-whisper>=1.2.1
+sounddevice>=0.5.6
+numpy>=2.0
+
+# voice out: text-to-speech (uses Windows SAPI voices; comtypes/pywin32
+# come with it on Windows)
+pyttsx3>=2.99

@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+
+# BMO's saved conversation and facts - personal data
+bmo_memory.json*
+
+# virtual environments
+.venv/
+venv/
+env/
+
+# editors / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store
