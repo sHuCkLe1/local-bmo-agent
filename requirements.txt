@@ -13,3 +13,7 @@ numpy>=2.0
 # voice out: text-to-speech (uses Windows SAPI voices; comtypes/pywin32
 # come with it on Windows)
 pyttsx3>=2.99
+
+# face: the provided artwork in assets/faces/all/ (required - these are the
+# only faces BMO shows)
+pillow>=10.0

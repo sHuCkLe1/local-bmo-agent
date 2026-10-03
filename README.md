@@ -12,9 +12,10 @@ text-to-speech, with no cloud accounts or API keys.
 
 - **Local brain.** Any [Ollama](https://ollama.com) model. The default is
   `qwen2.5:3b`, which is small, fast and can use tools.
-- **Animated face** in its own window. It blinks, looks around, yawns, winks,
-  and falls asleep when left alone. It reacts to the conversation with 15
-  expressions (happy, sad, love, surprised, confused, and more).
+- **Face** in its own window, drawn only from the provided artwork in
+  `assets/faces/all/`. It drifts between calm faces when idle, drifts off when
+  left alone, and reacts to the conversation with a fitting face per state and
+  per spoken sentence (happy, sad, love, surprised, confused, and more).
 - **Voice out.** BMO reads replies aloud sentence by sentence, as they
   stream in, and the mouth moves with the words (Windows SAPI voices via
   `pyttsx3`).
@@ -114,6 +115,7 @@ weather.
 | `--no-wake`, `--wake-model`, `--wake-debug` | on, `tiny.en` | Wake word off / its model / print everything it hears |
 | `--no-tools`, `--no-shell` | | Chat only / everything except commands |
 | `--memory-file`, `--no-memory` | `bmo_memory.json` | Where memory is saved / don't save anything |
+| `--max-history` | `60` | Messages of the conversation kept in memory (bigger = better recall, more tokens; `0` = keep none) |
 | `--sleep-after` | `5` | Minutes of quiet before BMO dozes off (`0` = never) |
 | `--system` | (BMO's personality) | Replace the personality prompt |
 | `--tts-test "text"` | | Test voice output alone and exit |

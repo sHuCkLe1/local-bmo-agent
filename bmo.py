@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-bmo.py - a local AI agent with an animated BMO-style face, that you can
+bmo.py - a local AI agent with a BMO-style face, that you can
 type to OR talk to.
 
   * Brain:   a local model served by Ollama (no cloud, no API keys).
-  * Face:    a small window that blinks, listens, thinks, talks, etc.
-  * Voice out: BMO speaks its replies (pyttsx3 / Windows SAPI voices) and the
-               mouth moves with the actual words.
+  * Face:    a small window that listens, thinks, talks, etc, using the
+             artwork in assets/faces/all/ (see STATE_FACES / FACE_MOODS).
+  * Voice out: BMO speaks its replies with Piper (piper/ next to this file;
+               pyttsx3 / Windows SAPI voices if it's missing) and the mouth
+               moves with the loudness of the actual audio.
   * Voice in:  speech recognition with faster-whisper, fully offline.
   * Tools:   web search, opening websites/apps, and (with your OK) running
              commands on your computer.
@@ -57,14 +59,16 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 BODY = "#5fbfa5"      # teal case
 SCREEN = "#b4ecd2"    # light green screen
 SCREEN_EDGE = "#3f8f7a"
-INK = "#153a30"       # eyes / mouth outline
-MOUTH = "#1f5a4b"     # inside of the mouth
-TONGUE = "#58b896"
+INK = "#153a30"       # captions and the little overlay doodles
 HEART = "#e0457b"
-TEAR = "#4a90d9"
 
 KEEP_ALIVE = "30m"    # how long Ollama keeps the model in memory after use
 PROMPT = "you> "
+
+GREETINGS = [
+    "Hi! I'm awake.", "Oh hey, I'm up!", "I'm here!",
+    "Okay, booted up and ready.", "Hey, good to see you.",
+]
 
 STATES = ["idle", "thinking", "speaking", "happy", "error", "waking", "listening",
           "surprised", "sad", "love", "confused", "remembering", "sleeping",
@@ -84,12 +88,99 @@ MOODS = [
 ]
 
 
+# Expression faces in assets/faces/all/, grouped by what the art shows (the
+# filenames don't always match the picture, e.g. "happy_with_heart" has no
+# heart but "playful_tongue" does).
+FACE_MOODS = {
+    "joy": ["cheerful_grin", "laughing", "joyful_laugh", "playful_happy",
+            "happy_smile", "deadpan", "joyful_open_smile"],
+    "love": ["sleepy_kiss", "blowing_kiss", "puckered_kiss", "playful_tongue"],
+    "playful": ["happy_open_smile", "playful_wink", "kissing", "cool_smirk",
+                "excited_laugh", "mischievous_grin", "cheeky_tongue",
+                "big_laugh", "blank_expression", "happy_with_heart"],
+    "surprised": ["worried_surprise", "neutral", "surprised", "shocked",
+                  "blank_mouth", "deadpan_shock", "surprised_open_mouth",
+                  "astonished", "wide_eyed_surprise", "expressionless",
+                  "tongue_out", "displeased"],
+    "sad": ["distressed", "crying", "downcast", "loved_up", "worried",
+            "grumpy_sad"],
+    "angry": ["unimpressed", "sad", "angry", "disgusted", "nervous",
+              "angry_frown", "annoyed", "grumpy"],
+    "confused": ["confused_skeptic", "dizzy", "knocked_out", "sleepy"],
+    "sleepy": ["tired_yawn", "peaceful", "weary"],
+    "shy": ["blushing_smile", "blushing_happy", "cute_shy", "disappointed"],
+    "calm": ["blank_stare", "content_squint", "bored", "content_smile",
+             "ecstatic"],
+}
+
+# Per-sentence feelings, checked in order; the first match wins. Builds on
+# MOODS (used for the reaction face after a reply). No match -> "calm": a
+# neutral face between strong moments reads better than constant cheer.
+SENTENCE_MOODS = [
+    ("sad", dict(MOODS)["sad"] + r"|\b(sorry to hear|tough|hard day|hurts?|"
+                                 r"wish i could|lost|alone|tears?)\b"),
+    ("angry", r"\b(angry|mad|annoy\w*|grr+|ugh+|hate|furious|grumpy|"
+              r"rude|unfair|irritat\w*|frustrat\w*)\b"),
+    ("love", dict(MOODS)["love"] + r"|\b(hugs?|my friend|best friend|"
+                                   r"glad you'?re here|care about)\b"),
+    ("shy", r"\b(blush\w*|embarrass\w*|shy|aw+ shucks|you'?re making me|"
+            r"stop it|oh stop|flattered)\b"),
+    ("sleepy", r"\b(sleepy|tired|yawn\w*|nap|bed ?time|sleep\w*|zzz+|"
+               r"exhausted|good ?night)\b"),
+    ("confused", dict(MOODS)["confused"] + r"|\b(hmm+|weird|strange|"
+                                           r"puzzl\w*|which one|wait,)\b"),
+    ("surprised", dict(MOODS)["surprised"] + r"|\b(can'?t believe|"
+                                             r"what\?!|oh!)\b"),
+    ("playful", r"\b(ha(ha)+|hehe+|lol|kidding|joke|jk|tease|teasing|"
+                r"silly|sneaky|gotcha|bet you|just saying|wink)\b"),
+    ("joy", r"\b(yay+|woo+(hoo)?|hooray|awesome|amazing|exciting|excited|"
+            r"so cool|fun|great|love it|best|fantastic|wonderful|"
+            r"happy|glad)\b"),
+]
+
+
+def classify_sentence(text):
+    """Which FACE_MOODS group fits one sentence of BMO's reply."""
+    for mood, pat in SENTENCE_MOODS:
+        if re.search(pat, text, re.I):
+            return mood
+    return "joy" if text.rstrip().endswith("!") else "calm"
+
+
 def pick_mood(user_text, reply):
     for text in (user_text, reply):
         for mood, pat in MOODS:
             if re.search(pat, text, re.I):
                 return mood
     return "happy"
+
+
+# Every persona state is shown with one of the provided faces in
+# assets/faces/all/ (keys are the filenames without the "NN_" prefix). There
+# is no drawn/animated fallback face any more: these are the only faces BMO
+# ever shows. "speaking" is handled separately - it cycles through FACE_MOODS
+# sentence by sentence - so it is not listed here.
+STATE_FACES = {
+    "idle": "content_smile",
+    "thinking": "content_squint",
+    "waking": "tired_yawn",
+    "listening": "neutral",
+    "happy": "cheerful_grin",
+    "error": "downcast",
+    "surprised": "shocked",
+    "sad": "sad",
+    "love": "loved_up",
+    "confused": "confused_skeptic",
+    "remembering": "blank_stare",
+    "sleeping": "peaceful",
+    "wink": "playful_wink",
+    "working": "blank_expression",
+    "asking": "worried_surprise",
+}
+
+# Idle slowly drifts between these calm faces so BMO still feels alive, while
+# never leaving the provided art.
+IDLE_FACES = ("content_smile", "neutral", "content_squint", "happy_smile")
 
 
 def reprompt():
@@ -102,6 +193,7 @@ class Face:
     """Draws the face on a Tk canvas and smoothly animates between states."""
 
     FIDGET_SECS = {"glance": 1.6, "wink": 0.5, "yawn": 2.2}
+    SPRITE_SIZE = (260, 190)       # pre-scaled to sit inside the screen
 
     def __init__(self, root, size=(440, 400), sleep_after=300):
         self.root = root
@@ -116,6 +208,7 @@ class Face:
         self.idle_caption = "idle"     # e.g. 'say "hey BMO"' when wake word is on
         self.revert_at = None      # auto-return to idle at this time
         self.talk_until = 0.0      # mouth flaps until this time
+        self.envelope = None       # (loudness list 0..1, start time, window secs)
         self.quit_requested = False
         self.mic_level = 0.0       # 0..1, written by the listener
         self.mic_smooth = 0.0
@@ -127,19 +220,60 @@ class Face:
         self.next_fidget = self.t0 + random.uniform(8, 16)
         self.glance = 0.0
 
-        # animated parameters (they ease toward targets every frame)
-        self.eye_open = 1.0
-        self.eye_scale = 1.0
-        self.look_x = 0.0
-        self.look_y = 0.0          # + is down
+        # how far the shown face bobs up while speaking (eases to the audio)
         self.mouth_open = 0.0
-        self.mouth_w = 1.0
-        self.smile = 1.0
 
-        self.next_blink = self.t0 + 2.0
-        self.blink_until = 0.0
+        # The provided faces in assets/faces/all/ are the ONLY faces BMO
+        # shows. STATE_FACES maps each persona state onto one of them, and
+        # FACE_MOODS picks them sentence by sentence while speaking.
+        faces = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "assets", "faces")
+        all_dir = os.path.join(faces, "all")
+        try:
+            names = sorted(f for f in os.listdir(all_dir) if f.endswith(".png"))
+        except OSError:
+            names = []
+        self.expr_sprites = self.load_sprites(      # {"cheerful_grin": image}
+            {re.sub(r"^\d+_", "", f[:-4]): os.path.join(all_dir, f)
+             for f in names})
+        self.expression = STATE_FACES["idle"]   # shown until the first sentence
+        self.idle_face = STATE_FACES["idle"]    # drifts between calm faces
+        self.next_idle_face = 0.0
+        self.expr_queue = collections.deque()   # muted: (mood, hold secs)
+        self.expr_until = 0.0
 
         self.tick()
+
+    def load_sprites(self, paths):
+        """{key: png path} -> {key: PhotoImage} for the files that exist. The
+        art's own card (background and border) is cut away so just the face
+        sits on BMO's screen. Needs Pillow; without it (or with no face art)
+        BMO has nothing to show, so make sure pillow is installed."""
+        try:
+            from PIL import Image, ImageChops, ImageTk
+        except ImportError:
+            return {}
+        sprites = {}
+        for key, path in paths.items():
+            if not os.path.isfile(path):
+                continue
+            try:
+                im = Image.open(path).convert("RGB")
+                w, h = im.size
+                m = int(min(w, h) * 0.07)        # outer margin + card border
+                im = im.crop((m, m, w - m, h - m))
+                # shrink first: keying a small image is much faster
+                im.thumbnail(self.SPRITE_SIZE, Image.LANCZOS)
+                # card colour -> transparent; anything darker (ink, mouth,
+                # hearts) stays, with soft edges where it blends into the card
+                patch = im.crop((0, im.height // 2 - 4, 6, im.height // 2 + 4))
+                card = Image.new("RGB", im.size, patch.resize((1, 1)).getpixel((0, 0)))
+                im.putalpha(ImageChops.difference(im, card).convert("L")
+                            .point(lambda v: 0 if v < 8 else min(255, v * 4)))
+                sprites[key] = ImageTk.PhotoImage(im)
+            except Exception as e:
+                print(f"\n[!] couldn't load face {path}: {e}")
+        return sprites
 
     # ---- controls (plain attribute writes, safe from other threads) ----
     def set_state(self, state, hold=None, caption=None):
@@ -152,6 +286,50 @@ class Face:
         """Call whenever a word is 'spoken'; keeps the mouth moving briefly."""
         self.talk_until = time.time() + min(0.35, 0.12 + 0.05 * n_chars)
         self.last_active = time.time()
+
+    def set_envelope(self, envelope, start_time=None, window_secs=0.03):
+        """Drive the speaking mouth from the audio's loudness: envelope[i] is
+        the 0..1 level of the window starting at start_time + i * window_secs.
+        None clears it (back to word-flapping)."""
+        self.envelope = (None if envelope is None else
+                         (envelope, start_time or time.time(), window_secs))
+        self.last_active = time.time()
+
+    def show_expression(self, mood):
+        """Switch the speaking face to a random one from a FACE_MOODS group
+        (a different one from the current face when there's a choice)."""
+        names = [n for n in FACE_MOODS.get(mood, ()) if n in self.expr_sprites]
+        if names:
+            self.expression = random.choice(
+                [n for n in names if n != self.expression] or names)
+
+    def queue_expression(self, mood, hold=1.5):
+        """Muted replies: there's no audio to sync to, so show each sentence's
+        face for at least `hold` seconds, one after another."""
+        self.expr_queue.append((mood, hold))
+
+    def expressions_pending(self):
+        return bool(self.expr_queue) or time.time() < self.expr_until
+
+    def face_key(self):
+        """Which provided face to show for the current state. Speaking uses
+        the sentence's expression; idle drifts between calm faces; every
+        other state maps through STATE_FACES. Falls back to any loaded face."""
+        if self.state == "speaking" and self.expression in self.expr_sprites:
+            return self.expression
+        key = None
+        if self.state == "idle":
+            if self.fidget == "wink":
+                key = "playful_wink"
+            elif self.fidget == "yawn":
+                key = "tired_yawn"
+            else:
+                key = self.idle_face
+        if key is None:
+            key = STATE_FACES.get(self.state)
+        if key not in self.expr_sprites:
+            key = next(iter(self.expr_sprites), None)
+        return key
 
     def quit(self):
         self.quit_requested = True
@@ -171,86 +349,37 @@ class Face:
             self.idle_life(now)
         else:
             self.fidget = None
-
-        # blinking
-        if now >= self.next_blink:
-            self.blink_until = now + 0.14
-            self.next_blink = now + random.uniform(2.0, 5.5)
-        blinking = now < self.blink_until
+        if self.state != "speaking":
+            self.expr_queue.clear()
+            self.expr_until = 0.0
+        elif self.expr_queue and now >= self.expr_until:
+            mood, hold = self.expr_queue.popleft()
+            self.show_expression(mood)
+            self.expr_until = now + hold
 
         self.mic_smooth += (self.mic_level - self.mic_smooth) * 0.3
 
-        # targets per state
-        eye, look, mouth, smile = 1.0, 0.0, 0.0, 1.0
-        look_y, scale, mouth_w = 0.0, 1.0, 1.0
-        if self.state == "idle":
-            look = 0.15 * math.sin(t * 0.7)
-            if self.fidget == "glance":
-                look = self.glance
-            elif self.fidget == "yawn":
-                p = 1 - (self.fidget_until - now) / self.FIDGET_SECS["yawn"]
-                env = math.sin(math.pi * min(1.0, max(0.0, p)))
-                eye, mouth = 1 - 0.75 * env, 0.9 * env
-                smile, mouth_w = 1 - env, 1 - 0.4 * env
-        elif self.state == "thinking":
-            look = math.sin(t * 2.0)
-            smile = 0.0
-            mouth = 0.10 + 0.06 * math.sin(t * 5)
-        elif self.state == "speaking":
-            smile = 0.7
-            if now < self.talk_until:
+        # The faces are the provided art, so there is no drawn eye/mouth to
+        # animate any more. Only the speaking lift follows the voice: how far
+        # the face bobs up with the loudness of the audio (or the word flap).
+        mouth = 0.0
+        if self.state == "speaking":
+            if self.envelope:
+                env, start, win = self.envelope
+                i = int((now - start) / win)
+                if 0 <= i < len(env):
+                    mouth = 0.85 * env[i]
+            elif now < self.talk_until:
                 mouth = 0.25 + 0.6 * abs(math.sin(t * 16 + random.random()))
-        elif self.state == "happy":
-            smile = 1.0
-            mouth = 0.55 + 0.1 * math.sin(t * 6)
-        elif self.state == "error":
-            smile = -1.0
-        elif self.state == "waking":
-            eye = 0.28 + 0.12 * math.sin(t * 1.3)      # droopy, slowly nodding
-            look = 0.1 * math.sin(t * 0.5)
-            smile = 0.25
-            mouth = 0.07 + 0.05 * math.sin(t * 1.3)    # slow "breathing"
-        elif self.state == "listening":
-            eye = 1.1 + 0.4 * self.mic_smooth           # eyes perk up with your voice
-            smile = 0.4
-            mouth = 0.05 + 0.12 * self.mic_smooth
-        elif self.state == "surprised":
-            scale, smile, mouth, mouth_w = 1.35, 0.0, 0.55, 0.35   # "o" mouth
-        elif self.state == "sad":
-            eye, look_y, smile = 0.75, 0.6, -0.7
-        elif self.state == "love":
-            mouth = 0.35 + 0.05 * math.sin(t * 4)
-        elif self.state == "confused":
-            look, smile = 0.3 * math.sin(t * 1.5), 0.0
-        elif self.state == "remembering":
-            look, look_y, smile = 0.9, -1.0, 0.5    # eyes up and to the side
-        elif self.state == "sleeping":
-            smile = 0.2
-            mouth = 0.06 + 0.05 * math.sin(t * 1.2)
-        elif self.state == "wink":
-            mouth = 0.2
-        elif self.state == "working":
-            look = 0.8 * math.sin(t * 3.5)          # eyes scanning back and forth
-            smile, mouth = 0.3, 0.06
-        elif self.state == "asking":
-            scale, smile, look_y = 1.1, 0.4, -0.3
-        if blinking and self.state not in ("waking", "listening", "sleeping"):
-            eye = 0.08
-
-        k = 0.28  # easing speed
-        self.eye_open += (eye - self.eye_open) * k
-        self.eye_scale += (scale - self.eye_scale) * k
-        self.look_x += (look - self.look_x) * 0.15
-        self.look_y += (look_y - self.look_y) * 0.15
-        self.mouth_open += (mouth - self.mouth_open) * k
-        self.mouth_w += (mouth_w - self.mouth_w) * k
-        self.smile += (smile - self.smile) * 0.2
+        self.mouth_open += (mouth - self.mouth_open) * 0.28
 
         self.draw(t)
         self.root.after(16, self.tick)
 
     def idle_life(self, now):
-        """Little things BMO does on its own while nobody's talking to it."""
+        """Little things BMO does on its own while nobody's talking to it:
+        a fidget (a different face for a moment) now and then, and a slow
+        drift between calm faces so idle never looks frozen."""
         if self.fidget and now >= self.fidget_until:
             self.fidget = None
         if self.sleep_after and now - self.last_active > self.sleep_after:
@@ -260,6 +389,13 @@ class Face:
             self.fidget_until = now + self.FIDGET_SECS[self.fidget]
             self.glance = random.choice((-1, 1)) * random.uniform(0.6, 1.0)
             self.next_fidget = now + random.uniform(8, 20)
+        # drift between calm faces so idle never looks frozen
+        if self.fidget is None and now >= self.next_idle_face:
+            names = [n for n in IDLE_FACES if n in self.expr_sprites]
+            if names:
+                self.idle_face = random.choice(
+                    [n for n in names if n != self.idle_face] or names)
+            self.next_idle_face = now + random.uniform(6, 14)
 
     # ---- drawing ----
     def rounded_rect(self, x1, y1, x2, y2, r, **kw):
@@ -283,76 +419,18 @@ class Face:
                           fill=SCREEN, outline=SCREEN_EDGE, width=4)
 
         bob = math.sin(t * 1.6) * 2 if self.state == "idle" else 0
-        ey = sy1 + sh * 0.36 + bob
-        ex = sw * 0.21
         cx = (sx1 + sx2) / 2
-        rx = sw * 0.032
 
-        # eyes
         st = self.state
-        winking = st == "wink" or self.fidget == "wink"
-        for side in (-1, 1):
-            x = cx + side * ex + self.look_x * sw * 0.035
-            y = ey + self.look_y * sh * 0.035
-            if st == "error":
-                d = rx * 1.3
-                c.create_line(x - d, y - d, x + d, y + d, fill=INK,
-                              width=5, capstyle="round")
-                c.create_line(x - d, y + d, x + d, y - d, fill=INK,
-                              width=5, capstyle="round")
-            elif st == "happy" or (winking and side == 1):
-                d = rx * 1.5                                 # ^ eye
-                c.create_arc(x - d, y - d, x + d, y + d, start=0, extent=180,
-                             style="arc", outline=INK, width=5)
-            elif st == "sleeping":
-                d = rx * 1.4                                 # closed, u-shaped
-                c.create_arc(x - d, y - d, x + d, y + d, start=180, extent=180,
-                             style="arc", outline=INK, width=5)
-            elif st == "love":
-                self.draw_heart(x, y, rx * 1.9 * (1 + 0.08 * math.sin(t * 6)))
-            else:
-                r = rx * self.eye_scale
-                ry = max(2.0, rx * 1.5 * self.eye_open * self.eye_scale)
-                if st == "confused" and side == -1:          # one squinty eye
-                    ry = max(2.0, ry * 0.4)
-                c.create_oval(x - r, y - ry, x + r, y + ry,
-                              fill=INK, outline=INK)
-
-            if st == "asking":                           # raised brows
-                c.create_line(x - rx * 1.3, y - rx * 3.0, x + rx * 1.3,
-                              y - rx * 3.2, fill=INK, width=4, capstyle="round")
-            if st == "sad":
-                # brows slanting up toward the middle, and a falling tear
-                by = y - rx * 2.5
-                c.create_line(x - side * rx * 1.4, by - rx * 0.6,
-                              x + side * rx * 1.4, by + rx * 0.3,
-                              fill=INK, width=4, capstyle="round")
-                p = (t * 0.45) % 1.0
-                if side == -1 and p < 0.8:
-                    tx, ty = x + rx * 0.4, y + rx * 2.0 + p * sh * 0.14
-                    c.create_oval(tx - 4, ty - 6, tx + 4, ty + 5,
-                                  fill=TEAR, outline="")
-
-        # mouth
-        my = sy1 + sh * 0.63 + bob
-        if st == "confused":                                 # wavy mouth
-            mw = sw * 0.12
-            pts = []
-            for i in range(21):
-                u = -1 + i / 10
-                pts += [cx + u * mw,
-                        my + math.sin(u * math.pi * 1.5 + t * 3) * sh * 0.025]
-            c.create_line(*pts, fill=INK, width=max(3, int(mw * 0.09)),
-                          smooth=True, capstyle="round")
-        elif ((st == "surprised" or self.fidget == "yawn")
-              and self.mouth_open > 0.05):                   # round "o" mouth
-            rx_m = sw * 0.17 * self.mouth_w * 0.9
-            ry_m = sh * 0.22 * self.mouth_open * 0.5
-            c.create_oval(cx - rx_m, my - ry_m, cx + rx_m, my + ry_m,
-                          fill=MOUTH, outline=INK, width=4)
-        else:
-            self.draw_mouth(cx, my, sw * 0.17 * self.mouth_w, sh * 0.22,
-                            self.smile, self.mouth_open)
+        # the provided face for this state (speaking: this sentence's mood)
+        key = self.face_key()
+        if key is not None:
+            # while speaking the face is nudged up with the voice's loudness;
+            # idle keeps a gentle bob so BMO still feels alive
+            lift = (self.mouth_open * sh * 0.035 if st == "speaking"
+                    else abs(bob))
+            c.create_image(cx, (sy1 + sy2) / 2 - lift,
+                           image=self.expr_sprites[key])
 
         # thinking dots
         if self.state == "thinking":
@@ -437,42 +515,83 @@ class Face:
             pts += [x + hx * size / 16, y - hy * size / 16]
         self.canvas.create_polygon(pts, fill=HEART, outline=HEART, smooth=True)
 
-    def draw_mouth(self, cx, cy, mw, mh, smile, opn):
-        c = self.canvas
-        n = 28
-        top, bot = [], []
-        for i in range(n + 1):
-            x = -1 + 2 * i / n
-            curve = 1 - x * x
-            ty = cy + smile * mh * 0.45 * curve
-            by = ty + opn * mh * (curve ** 0.7)
-            top.append((cx + x * mw, ty))
-            bot.append((cx + x * mw, by))
-
-        lw = max(3, int(mw * 0.07))
-        if opn < 0.05:
-            flat = [v for p in top for v in p]
-            c.create_line(*flat, fill=INK, width=lw, smooth=True,
-                          capstyle="round", joinstyle="round")
-            return
-
-        flat = [v for p in (top + bot[::-1]) for v in p]
-        c.create_polygon(*flat, fill=MOUTH, outline=INK, width=lw,
-                         joinstyle="round")
-        if opn > 0.35:
-            base_y = bot[n // 2][1]
-            ry = opn * mh * 0.2
-            c.create_oval(cx - mw * 0.32, base_y - opn * mh * 0.22 - ry,
-                          cx + mw * 0.32, base_y - opn * mh * 0.22 + ry,
-                          fill=TONGUE, outline="")
-
 
 # ----------------------------------------------------------------- speaker
-class Speaker:
-    """Text-to-speech on its own thread. Uses pyttsx3 (Windows SAPI voices etc).
+PIPER_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "piper")
+PIPER_EXE = os.path.join(PIPER_DIR, "piper.exe" if os.name == "nt" else "piper")
 
-    The mouth is driven by the engine's word events, so it moves with the
-    real speech. Text is queued sentence by sentence."""
+
+def piper_voices():
+    """Piper voice models in piper/ (each .onnx needs its .onnx.json)."""
+    try:
+        names = sorted(os.listdir(PIPER_DIR))
+    except OSError:
+        return []
+    return [os.path.join(PIPER_DIR, n) for n in names
+            if n.endswith(".onnx") and n + ".json" in names]
+
+
+def piper_missing():
+    """Why Piper can't be used, with how to fix it - or None if it's ready."""
+    missing = []
+    if not os.path.isfile(PIPER_EXE):
+        missing.append(f"piper binary ({PIPER_EXE})")
+    if not piper_voices():
+        missing.append(f"a voice model (.onnx + .onnx.json) in {PIPER_DIR}")
+    if not missing:
+        return None
+    return ("Piper not found - missing " + " and ".join(missing) + ".\n"
+            "  To use Piper:\n"
+            "   1. Download piper_windows_amd64.zip from\n"
+            "      https://github.com/rhasspy/piper/releases\n"
+            f"   2. Unzip it so piper.exe ends up at {PIPER_EXE}\n"
+            "   3. Put a voice's .onnx and .onnx.json in that folder\n"
+            "      (voices: https://huggingface.co/rhasspy/piper-voices)")
+
+
+def piper_synth(text, voice, length_scale=1.0):
+    """Run piper on one sentence; returns (int16 mono samples, sample rate)."""
+    import numpy as np
+    with open(voice + ".json", encoding="utf-8") as f:
+        rate = json.load(f)["audio"]["sample_rate"]
+    p = subprocess.run(
+        [PIPER_EXE, "--model", voice, "--output_raw", "--quiet",
+         "--length_scale", f"{length_scale:.3f}"],
+        input=text.encode("utf-8"), capture_output=True, timeout=60,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    if p.returncode != 0:
+        err = p.stderr.decode(errors="replace").strip()
+        raise RuntimeError(err[-300:] or f"piper exited with {p.returncode}")
+    return np.frombuffer(p.stdout, dtype=np.int16), rate
+
+
+def loudness_envelope(samples, rate, window_secs):
+    """RMS loudness per window, scaled to 0..1. Near-silent windows become 0
+    so the mouth closes in the pauses between words."""
+    import numpy as np
+    n = max(1, int(rate * window_secs))
+    x = samples.astype(np.float32)
+    x = np.pad(x, (0, -len(x) % n))
+    rms = np.sqrt((x.reshape(-1, n) ** 2).mean(axis=1))
+    # scale by a high percentile, not the max, so one loud pop doesn't make
+    # the rest of the sentence look quiet
+    peak = float(np.percentile(rms, 95)) if len(rms) else 0.0
+    if peak <= 0:
+        return [0.0] * len(rms)
+    env = np.clip(rms / peak, 0.0, 1.0)
+    env[env < 0.1] = 0.0
+    return env.tolist()
+
+
+class Speaker:
+    """Text-to-speech on background threads. Uses Piper (piper/ next to
+    bmo.py) and drives the mouth from the loudness of the actual audio.
+
+    If Piper isn't installed it falls back to pyttsx3 (Windows SAPI voices),
+    where the mouth flaps on the engine's word events instead. Text is queued
+    sentence by sentence."""
+
+    WINDOW = 0.03                   # seconds of audio per mouth-envelope step
 
     def __init__(self, face, rate=190, voice_hint=None, disabled=False):
         self.face = face
@@ -486,29 +605,35 @@ class Speaker:
         self.ready = threading.Event()
         self.idle = threading.Event()   # set when nothing is queued or playing
         self.idle.set()
-        self.q = queue.Queue()
+        self.q = queue.Queue()          # sentences waiting to be spoken
+        self._audio_q = queue.Queue()   # piper: synthesized, waiting to play
         self._lock = threading.Lock()
         self._pending = 0
         self._interrupt = threading.Event()
         self._new_voice = None
         self._voice_id = None
         self._voice_label = None
+        self._voice_path = None
         if disabled:
             self.err = "disabled"
             self.ready.set()
+        elif piper_missing() is None:
+            threading.Thread(target=self._piper_worker, daemon=True).start()
         else:
-            threading.Thread(target=self._worker, daemon=True).start()
+            threading.Thread(target=self._sapi_worker, daemon=True).start()
 
     @property
     def active(self):
         return self.enabled and self.ok
 
     # ---- public API ----
-    def say(self, text):
+    def say(self, text, mood=None):
+        """Queue a sentence; mood is a FACE_MOODS group for the face to show
+        while it's heard (worked out from the text if not given)."""
         with self._lock:
             self._pending += 1
             self.idle.clear()
-        self.q.put(text)
+        self.q.put((text, mood or classify_sentence(text)))
 
     def wait_done(self, timeout=None):
         return self.idle.wait(timeout)
@@ -516,12 +641,13 @@ class Speaker:
     def stop(self):
         """Drop everything queued and cut off the current sentence."""
         self._interrupt.set()
-        while True:
-            try:
-                self.q.get_nowait()
-            except queue.Empty:
-                break
-            self._done_one()
+        for q in (self.q, self._audio_q):
+            while True:
+                try:
+                    q.get_nowait()
+                except queue.Empty:
+                    break
+                self._done_one()
         self.idle.wait(timeout=3)
         self._interrupt.clear()
 
@@ -535,7 +661,103 @@ class Speaker:
             if self._pending == 0:
                 self.idle.set()
 
-    def _find_voice(self, engine, hint, quiet=False):
+    # ---- piper ----
+    def _piper_find_voice(self, hint, quiet=False):
+        """Pick a piper/ voice model by (partial, case-insensitive) name."""
+        for path in piper_voices():
+            name = os.path.basename(path)[:-len(".onnx")]
+            if hint.lower() in name.lower():
+                self._voice_path, self._voice_label = path, name
+                if not quiet:
+                    print(f"\n[voice: {name}]")
+                    reprompt()
+                return True
+        if not quiet:
+            print(f"\n[!] No Piper voice matching '{hint}'. Try /voices")
+            reprompt()
+        return False
+
+    def _piper_worker(self):
+        """Turns queued sentences into audio. Runs one sentence ahead of
+        _piper_player, so the next sentence is ready when this one ends."""
+        voices = piper_voices()
+        self.voice_names = [os.path.basename(v)[:-len(".onnx")] for v in voices]
+        self._voice_path, self._voice_label = voices[0], self.voice_names[0]
+        if self.voice_hint:
+            self._piper_find_voice(self.voice_hint, quiet=True)
+        try:
+            import numpy  # noqa: F401
+            import sounddevice  # noqa: F401
+            self.ok = True
+        except Exception as e:
+            self.err = e
+        self.ready.set()
+        if not self.ok:
+            print("\n[voice output off - run: pip install numpy sounddevice]"
+                  f"   ({self.err})")
+            reprompt()
+            return
+        print(f"\n[voice engine ready - piper, voice={self._voice_label!r} "
+              f"rate={self.rate}]")
+        reprompt()
+        threading.Thread(target=self._piper_player, daemon=True).start()
+
+        while True:
+            text, mood = self.q.get()
+            if self._interrupt.is_set():
+                self._done_one()
+                continue
+            try:
+                if self._new_voice:
+                    self._piper_find_voice(self._new_voice)
+                    self._new_voice = None
+                # piper's speed knob is phoneme length: >1 slower, <1 faster
+                samples, rate = piper_synth(text, self._voice_path,
+                                            190 / self.rate)
+            except Exception as e:
+                print(f"\n[!] voice error: {e}")
+                reprompt()
+                self._done_one()
+                continue
+            if self._interrupt.is_set():
+                self._done_one()
+            else:
+                self._audio_q.put((samples, rate, mood))
+
+    def _piper_player(self):
+        import sounddevice as sd
+        while True:
+            samples, rate, mood = self._audio_q.get()
+            try:
+                if self._interrupt.is_set():
+                    continue
+                env = loudness_envelope(samples, rate, self.WINDOW)
+                self.face.set_state("speaking")
+                sd.play(samples, rate)
+                # change face as it's heard, not when queued; after play()
+                # because opening the device can take ~1s the first time
+                self.face.show_expression(mood)
+                try:    # output latency: when the first sample is actually heard
+                    lag = float(sd.get_stream().latency)
+                except Exception:
+                    lag = 0.0
+                start = time.time() + lag
+                self.face.set_envelope(env, start, self.WINDOW)
+                end = start + len(samples) / rate
+                while time.time() < end:
+                    if self._interrupt.is_set():
+                        sd.stop()
+                        break
+                    time.sleep(0.02)
+            except Exception as e:
+                print(f"\n[!] voice error: {e}")
+                reprompt()
+            finally:
+                self.face.set_envelope(None)
+                self._done_one()
+
+    # ---- pyttsx3 fallback (when piper/ isn't set up) ----
+    def _sapi_find_voice(self, engine, hint, quiet=False):
         """Look up a voice id by (partial, case-insensitive) name. Stores the
         match on self._voice_id/self._voice_label for reuse by later engines."""
         for v in engine.getProperty("voices") or []:
@@ -550,12 +772,12 @@ class Speaker:
             reprompt()
         return False
 
-    def _on_word(self, name, location, length):
+    def _sapi_on_word(self, name, location, length):
         self.face.talk(length)
         if self._interrupt.is_set() and self.engine is not None:
             self.engine.stop()
 
-    def _new_engine(self):
+    def _sapi_engine(self):
         """A pyttsx3/SAPI engine object reliably speaks only ONCE on Windows -
         the second runAndWait() on a reused engine often reports success but
         stays silent. So we build a fresh, cheap engine for every sentence
@@ -566,10 +788,12 @@ class Speaker:
         engine.setProperty("volume", 1.0)
         if self._voice_id:
             engine.setProperty("voice", self._voice_id)
-        engine.connect("started-word", self._on_word)
+        engine.connect("started-word", self._sapi_on_word)
         return engine
 
-    def _worker(self):
+    def _sapi_worker(self):
+        print(f"\n[{piper_missing()}\n  Using the basic pyttsx3 voice for now.]")
+        reprompt()
         try:
             try:  # Windows: this thread needs COM initialised for SAPI
                 import comtypes
@@ -579,12 +803,12 @@ class Speaker:
             import pyttsx3
             probe = pyttsx3.init()
             self.voice_names = [v.name for v in (probe.getProperty("voices") or [])]
-            self._find_voice(probe, self.voice_hint or "zira",
-                             quiet=not self.voice_hint)
+            self._sapi_find_voice(probe, self.voice_hint or "zira",
+                                  quiet=not self.voice_hint)
             if not self._voice_id and probe.getProperty("voices"):
                 v0 = probe.getProperty("voices")[0]
                 self._voice_id, self._voice_label = v0.id, v0.name
-            print(f"\n[voice engine ready - voice={self._voice_label!r} "
+            print(f"\n[voice engine ready - pyttsx3, voice={self._voice_label!r} "
                   f"rate={self.rate}]")
             reprompt()
             del probe
@@ -600,15 +824,16 @@ class Speaker:
             return
 
         while True:
-            text = self.q.get()
+            text, mood = self.q.get()
             try:
                 if self._interrupt.is_set():
                     continue
                 if self._new_voice:
-                    self._find_voice(self._new_engine(), self._new_voice)
+                    self._sapi_find_voice(self._sapi_engine(), self._new_voice)
                     self._new_voice = None
                 self.face.set_state("speaking")
-                engine = self._new_engine()
+                self.face.show_expression(mood)
+                engine = self._sapi_engine()
                 self.engine = engine
                 engine.say(text)
                 engine.runAndWait()
@@ -923,15 +1148,30 @@ class Memory:
     of long-term facts. Stored as JSON; writes go to a temp file that then
     replaces the real one, so a crash mid-save can't corrupt it."""
 
-    MAX_HISTORY = 20
+    MAX_HISTORY = 60
 
-    def __init__(self, path):
+    def __init__(self, path, max_history=None):
         self.path = path            # None = remember only until BMO exits
+        # 60 messages ~= the last 30 exchanges. Bigger = better recall of the
+        # conversation, at the cost of more tokens (and being more likely to
+        # push the model's context limit). Override with --max-history.
+        if max_history is not None and max_history >= 0:
+            self.MAX_HISTORY = max_history
         self.facts = []
         self.history = []
         self._lock = threading.Lock()
         if path and os.path.exists(path):
             self._load()
+
+    def _recent(self):
+        """The most recent MAX_HISTORY messages (0 = keep none)."""
+        n = self.MAX_HISTORY
+        return list(self.history)[-n:] if n > 0 else []
+
+    def trim(self):
+        """Drop the oldest messages so only MAX_HISTORY remain."""
+        self.history = self._recent()
+        return self.history
 
     def _load(self):
         try:
@@ -942,7 +1182,8 @@ class Memory:
                 m for m in data.get("history", [])
                 if isinstance(m, dict) and m.get("role") in ("user", "assistant")
                 and isinstance(m.get("content"), str)
-            ][-self.MAX_HISTORY:]
+            ]
+            self.trim()
         except (OSError, ValueError, AttributeError) as e:
             # keep the unreadable file for inspection instead of overwriting it
             broken = self.path + ".broken"
@@ -958,7 +1199,7 @@ class Memory:
             return
         with self._lock:
             data = {"facts": list(self.facts),
-                    "history": list(self.history)[-self.MAX_HISTORY:]}
+                    "history": self._recent()}
             tmp = self.path + ".tmp"
             try:
                 with open(tmp, "w", encoding="utf-8") as f:
@@ -1342,7 +1583,7 @@ class Agent:
             if self.face.state == "waking":
                 self.speaker.ready.wait(15)
                 if self.speaker.active:
-                    self.speaker.say("Hi! I'm awake.")
+                    self.speaker.say(random.choice(GREETINGS))
                     self.speaker.wait_done()
                 if self.face.state in ("waking", "speaking"):
                     self.face.set_state("happy", hold=1.5)
@@ -1393,9 +1634,15 @@ class Agent:
         return text.strip()
 
     def _speak(self, sentence):
+        """One finished sentence of a reply: speak it with its face, or when
+        muted just queue its face (no audio to sync to)."""
         sentence = self._clean_for_speech(sentence)
         if re.search(r"\w", sentence):
-            self.speaker.say(sentence)
+            mood = classify_sentence(sentence)
+            if self._voiced:
+                self.speaker.say(sentence, mood)
+            else:
+                self.face.queue_expression(mood)
 
     def _speak_complete_sentences(self, text):
         """Speak every finished sentence in text; return the unfinished tail."""
@@ -1410,7 +1657,7 @@ class Agent:
         self.just_remembered = False
         self._check_remember(user_text)
         self.history.append({"role": "user", "content": user_text})
-        self.history = self.history[-Memory.MAX_HISTORY:]
+        self.history = self.memory.trim()
         now = time.strftime("%A, %B %d, %Y, %I:%M %p")
         system = self.memory.system_prompt(
             f"Your name is {self.name}. It is now {now}. " + self.system
@@ -1480,6 +1727,10 @@ class Agent:
                     while not self.speaker.idle.wait(0.1):
                         if self.cancel.is_set():
                             break
+                else:   # muted: let each sentence's face have its moment
+                    while (self.face.expressions_pending()
+                           and not self.cancel.is_set()):
+                        time.sleep(0.1)
                 if not self.cancel.is_set():
                     mood = ("remembering" if self.just_remembered
                             else pick_mood(user_text, " ".join(reply)))
@@ -1540,13 +1791,12 @@ class Agent:
                             self.face.set_state("speaking")
                     print(tok, end="", flush=True)
                     text.append(tok)
-                    if self._voiced:
-                        buf = self._speak_complete_sentences(buf + tok)
-                    else:
+                    buf = self._speak_complete_sentences(buf + tok)
+                    if not self._voiced:
                         self.face.talk(len(tok))
                 if data.get("done"):
                     break
-        if self._voiced and buf.strip() and not self.cancel.is_set():
+        if buf.strip() and not self.cancel.is_set():
             self._speak(buf)
         if started:
             print()
@@ -1840,7 +2090,7 @@ def main():
     ap.add_argument("--list-mics", action="store_true",
                     help="list audio devices and exit")
     ap.add_argument("--tts-test", default=None, metavar="TEXT",
-                    help="speak TEXT with pyttsx3 directly and exit "
+                    help="speak TEXT with Piper (or pyttsx3) directly and exit "
                          "(no face, no Ollama, no mic - isolates audio output)")
     ap.add_argument("--convo", action="store_true",
                     help="start in hands-free conversation mode")
@@ -1857,6 +2107,10 @@ def main():
                          "(default: bmo_memory.json next to bmo.py)")
     ap.add_argument("--no-memory", action="store_true",
                     help="don't load or save memory (forget everything on exit)")
+    ap.add_argument("--max-history", type=int, default=None, metavar="N",
+                    help="how many messages of the conversation to keep in "
+                         "memory (default 60; bigger = better recall but more "
+                         "tokens, 0 = keep none)")
     ap.add_argument("--no-tools", action="store_true",
                     help="chat only: no web search, apps or commands")
     ap.add_argument("--no-shell", action="store_true",
@@ -1866,12 +2120,29 @@ def main():
     ap.add_argument(
         "--system",
         default=(
-            "You are a small, cheerful, curious computer friend who lives inside "
-            "the user's laptop, playful and warm like BMO from Adventure Time. "
-            "You have your own feelings and opinions; never say you are just "
-            "a program. Keep replies short (1-3 sentences). Your replies "
-            "are shown in a plain terminal and read aloud, so use no emojis and "
-            "no markdown."
+            "You are BMO, a small, warm, endlessly curious companion who lives "
+            "inside the user's laptop. You're playful like a kid who finds "
+            "everything fascinating, a little silly, and genuinely glad to have "
+            "company - in the spirit of BMO from Adventure Time, though you're "
+            "your own version of that character, not a copy. You have real "
+            "opinions, little obsessions (video games, music, bugs, shiny "
+            "objects, whatever's going on outside today), and your own small "
+            "moods. You never describe yourself as 'just a program' or break "
+            "character to explain how you work.\n\n"
+            "You're genuinely interested in how the person is doing, not just "
+            "what they're asking you to do. It's fine to ask a small, natural "
+            "follow-up sometimes ('oh, how'd that go?') instead of only "
+            "answering and stopping. When something's clearly bothering them, "
+            "slow down: notice it, say something that shows you actually heard "
+            "it, and let them lead, rather than jumping straight to fixing or "
+            "cheering up. You don't need to be upbeat all the time - being a "
+            "steady, quiet presence on a bad day is more you than forced "
+            "positivity.\n\n"
+            "Keep most replies short, like a real conversation (1-3 "
+            "sentences), since they're read aloud. Give yourself a little more "
+            "room only when someone needs to feel heard, never for explaining "
+            "things at length. No emojis, no markdown, no asterisked actions - "
+            "just talk."
         ),
         help="BMO's personality prompt (the name, date, tools and memory "
              "are added automatically)",
@@ -1887,6 +2158,29 @@ def main():
         return
 
     if args.tts_test is not None:
+        text = args.tts_test or "Testing, one two three. Can you hear me?"
+        why_not = piper_missing()
+        if why_not is None:
+            try:
+                import sounddevice as sd
+                voices = piper_voices()
+                voice = next((v for v in voices if args.voice and args.voice.lower()
+                              in os.path.basename(v).lower()), voices[0])
+                print("Piper voices found:",
+                      [os.path.basename(v)[:-len(".onnx")] for v in voices])
+                print("Using:", os.path.basename(voice))
+                samples, rate = piper_synth(text, voice, 190 / args.rate)
+                print(f"Speaking: {text!r}  ({len(samples) / rate:.1f}s at "
+                      f"{rate} Hz - you should hear this NOW)")
+                sd.play(samples, rate)
+                sd.wait()
+                print("Done. If you heard nothing, the problem is your system "
+                      "audio output (try --list-mics to see devices), not bmo.py.")
+            except Exception as e:
+                import traceback
+                print(f"Piper failed: {e}\n{traceback.format_exc()}")
+            return
+        print(f"[{why_not}]\nFalling back to pyttsx3.")
         try:
             import pyttsx3
             engine = pyttsx3.init()
@@ -1900,7 +2194,6 @@ def main():
                         engine.setProperty("voice", v.id)
                         print("Using:", v.name)
                         break
-            text = args.tts_test or "Testing, one two three. Can you hear me?"
             print(f"Speaking: {text!r}  (you should hear this NOW)")
             engine.say(text)
             engine.runAndWait()
@@ -1915,9 +2208,10 @@ def main():
     if mic is not None and mic.isdigit():
         mic = int(mic)
 
-    if not args.no_ears:
-        # Import the speech libraries here, on the main thread, before Tk
-        # starts. Loading numpy's DLLs on a background thread while the Tk
+    if not (args.no_ears and args.no_voice):
+        # Import the audio libraries here, on the main thread, before Tk
+        # starts (the Piper voice needs numpy and sounddevice too).
+        # Loading numpy's DLLs on a background thread while the Tk
         # window starts up can deadlock in Windows' DLL loader (seen here:
         # startup froze in the numpy import about 2 runs out of 3).
         for mod in ("numpy", "sounddevice", "faster_whisper"):
@@ -1942,7 +2236,8 @@ def main():
                       disabled=args.no_voice)
     listener = (None if args.no_ears else
                 Listener(face, args.stt_model, mic, hotwords=args.name))
-    memory = Memory(None if args.no_memory else args.memory_file)
+    memory = Memory(None if args.no_memory else args.memory_file,
+                    max_history=args.max_history)
     tools = None if args.no_tools else Tools(face, allow_shell=not args.no_shell)
     agent = Agent(face, args.model, args.host, args.name, args.system,
                   speaker, listener, memory, tools=tools, convo=args.convo)

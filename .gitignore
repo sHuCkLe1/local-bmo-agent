@@ -15,3 +15,14 @@ env/
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# Piper voice binaries (~98 MB) - download separately, don't commit
+piper/
+
+# Scratch/reference art at the repo root
+faces_sheet.png
+
+# Duplicate face copies at assets/faces/ root: the runtime only reads
+# assets/faces/all/, so keep just that folder in the repo.
+/assets/faces/*.png
+/assets/faces/face_manifest.csv

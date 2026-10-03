@@ -277,18 +277,35 @@ question-in-the-same-breath), 10 look-alike sentences such as "Hey Bob",
 - **Saving is crash-safe**: the file is written to `.tmp` and then swapped
   in with `os.replace`. An unreadable file is renamed to `.broken` instead of
   being overwritten.
+- **How much is remembered** is `Memory.MAX_HISTORY` messages (default 60,
+  roughly the last 30 exchanges), overridable per-run with
+  `--max-history N`. Old messages are dropped oldest-first by `Memory.trim()`
+  whenever a message is added, loaded or saved, so the file stays bounded.
+  Bigger values mean better recall of the conversation at the cost of more
+  tokens per turn (and a greater chance of hitting the model's context limit).
 - The file is git-ignored.
 
 ## The face
 
+BMO has no drawn/animated face any more: every face it shows is one of the
+provided images in `assets/faces/all/` (loaded by `Face.load_sprites`, keyed
+by filename without the `NN_` prefix). Pillow is required for this.
+
+- `STATE_FACES` maps each persona state to one provided face.
+- `IDLE_FACES` are the calm faces `idle` drifts between (plus `playful_wink`
+  / `tired_yawn` for the wink and yawn fidgets).
+- `FACE_MOODS` groups the faces by the mood they show; while speaking, each
+  sentence picks a random face from its mood group (see `SENTENCE_MOODS`).
+
 All 15 states are listed in `STATES`, and `/face <state>` previews any of
-them. Adding one takes three steps:
+them. Adding one takes two steps:
 
 1. Add its name to `STATES`.
-2. In `Face.tick()`, set its targets (`eye`, `look`, `look_y`, `mouth`,
-   `smile`, `scale`, `mouth_w`).
-3. Optionally draw extras in `Face.draw()` (see `love`, `sad` or `working`),
-   and give it a caption.
+2. Add it to `STATE_FACES` (and, optionally, a caption in `Face.draw()`).
+
+The only things still drawn on the canvas are the screen itself, its caption,
+and a few overlay doodles (thinking dots, sleepy Z's, the listening equalizer
+and the corner reaction marks), which sit on top of the provided face.
 
 ## Lessons learned
 
