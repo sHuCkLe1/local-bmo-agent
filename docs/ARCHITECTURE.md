@@ -11,6 +11,7 @@ is meant for anyone who wants to understand or change the code.
 - [The tool loop](#the-tool-loop)
 - [The wake word](#the-wake-word)
 - [Memory](#memory)
+- [Wellbeing](#wellbeing)
 - [The face](#the-face)
 - [Lessons learned](#lessons-learned)
 - [Extending BMO](#extending-bmo)
@@ -32,6 +33,8 @@ flowchart LR
     Agent <-- "chat + tools<br/>(streaming)" --> Ollama[(Ollama<br/>qwen2.5:3b)]
     Agent -- tool calls --> Tools[Tools<br/>search / weather / apps / commands]
     Agent <--> Memory[(bmo_memory.json)]
+    Agent <--> Wellness[(bmo_wellness.json)]
+    Agent -- "crisis / mood" --> Wellness
     Agent -- sentences --> Speaker[Speaker<br/>pyttsx3]
     Speaker --> you
     Agent -. set_state .-> Face[Face window<br/>Tkinter]
@@ -112,6 +115,10 @@ See [The wake word](#the-wake-word).
 ### `Memory`
 Facts and the last 20 messages, saved as JSON. See [Memory](#memory).
 
+### `Wellness`
+The gentle mental-health side: mood check-ins, gratitude, journal and coping
+tips, saved as JSON. See [Wellbeing](#wellbeing).
+
 ### `Tools`
 Each tool is a normal method plus a JSON schema that tells the model what
 arguments it takes. `Tools.run()` never raises an exception: errors are
@@ -178,7 +185,10 @@ Markdown symbols and emoji are removed before speaking.
 **Mood.** After the reply, `pick_mood()` checks the user's words, then
 BMO's reply, against keyword patterns (`MOODS`), for example "thank you"
 gives `love` and "my dog died" gives `sad`. The default is `happy`. If a
-fact was just saved, the face shows `remembering` instead.
+fact was just saved, the face shows `remembering` instead. If the user
+sounded low (and the reply wasn't already `sad`/`love`), the `Wellness`
+module's `is_negative()` turns the reaction into `concerned`, so BMO sits
+with the person instead of flashing a cheerful face back at them.
 
 ## The tool loop
 
@@ -285,6 +295,48 @@ question-in-the-same-breath), 10 look-alike sentences such as "Hey Bob",
   tokens per turn (and a greater chance of hitting the model's context limit).
 - The file is git-ignored.
 
+## Wellbeing
+
+`Wellness` is the mental-health side, mirroring `Memory`: same JSON
+persistence (atomic temp-then-`os.replace`, `.broken` fallback, `MAX_ENTRIES`
+trim per list), same "plain class, no cleverness" style. It keeps four lists
+in `bmo_wellness.json`:
+
+| List | Written by | Notes |
+|---|---|---|
+| `moods` | `/mood`, the `log_mood` tool | `date`, `time`, `score` (1-5, or `None` for a note-only check-in) and `note` |
+| `gratitude` | `/grateful` | small "one good thing today" notes |
+| `journal` | `/journal` | longer private notes, read back with `/journal` |
+| `prompts` | the once-a-day gate | last time BMO invited a check-in, so it asks at most once a day |
+
+The design choices that matter:
+
+- **The model is never trusted with a crisis.** `is_crisis()` matches a fixed
+  set of phrases (`CRISIS_PATTERNS`); when it fires, `Agent._say_crisis()`
+  speaks a hard-coded `CRISIS_REPLY` (988, text HOME to 741741,
+  findahelpline.com) and skips the model entirely. BMO never improvises
+  around someone in danger.
+- **Coping tips are plain rules, not the model.** `suggest()` maps a feeling
+  to a `COPING` entry with regex (`FEELING_WORDS`), and the tips are phrased
+  as *offers* ("want to try...?"), never instructions. This keeps them
+  predictable and safe.
+- **Scoring is deliberately forgiving.** `parse_score()` reads a bare number,
+  a `n/5`, or plain words ("pretty good" -> 4, "rough" -> 2). Anything it
+  can't read becomes a note-only entry rather than a wrong number.
+- **The face stays gentle.** If the user's message reads as negative
+  (`is_negative()`) the reaction face becomes `concerned` instead of cheerful.
+- **Context, not commands.** `context()` returns one short line about the
+  recent trend; it's added to the system prompt so BMO can mention it
+  naturally, but the prompt tells it not to tool-first on feelings.
+- **Two tools.** `log_mood` and `suggest_coping` let the model record a
+  check-in or fetch a tip when the user clearly wants it, following the
+  normal "one string argument" tool pattern.
+
+Everything is local and git-ignored, and `--no-wellness` turns the whole
+module off. It is explicitly a friend, not a clinician: it doesn't diagnose
+or give medical advice, and it points to real support instead of trying to
+carry a serious situation alone.
+
 ## The face
 
 BMO has no drawn/animated face any more: every face it shows is one of the
@@ -297,7 +349,7 @@ by filename without the `NN_` prefix). Pillow is required for this.
 - `FACE_MOODS` groups the faces by the mood they show; while speaking, each
   sentence picks a random face from its mood group (see `SENTENCE_MOODS`).
 
-All 15 states are listed in `STATES`, and `/face <state>` previews any of
+All 18 states are listed in `STATES`, and `/face <state>` previews any of
 them. Adding one takes two steps:
 
 1. Add its name to `STATES`.

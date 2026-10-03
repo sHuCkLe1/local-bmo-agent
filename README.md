@@ -28,6 +28,11 @@ text-to-speech, with no cloud accounts or API keys.
   recent conversation carries over between runs.
 - **Tools.** Web search (DuckDuckGo), weather (wttr.in), opening websites and
   apps, and PowerShell commands, **which always need your approval**.
+- **A gentle wellbeing side.** A once-a-day mood check-in, a gratitude log, a
+  private journal, a guided breathing break, and small coping ideas offered as
+  options rather than instructions. It stays a friend, never a therapist, and
+  hands off to real crisis lines if something serious comes up. Turn it off
+  with `--no-wellness` or the `/wellness` overview.
 
 ## Requirements
 
@@ -82,6 +87,8 @@ weather.
 - "How much free space is on my C drive?" (BMO shows the command and asks first)
 - "Remember that my favourite colour is green", then restart BMO and ask about it
 - "Thank you BMO!" (watch the face)
+- \"I've had a rough day\" (BMO slows down and listens; `/mood 2` logs it)
+- `/breathe` for a short guided breathing break
 
 ### Commands
 
@@ -97,6 +104,13 @@ weather.
 | `/memory` | Show what BMO remembers |
 | `/remember <fact>` | Save a fact |
 | `/forget <n>`, `/forget all` | Forget one fact / every fact |
+| `/mood <1-5> [- note]` | Log today's mood, e.g. `/mood 4 - good day` |
+| `/moods` | Recent mood check-ins and a small trend |
+| `/grateful <text>`, `/gratitude` | Add / read gratitude notes |
+| `/journal [text]` | Write a private note, or read your last few |
+| `/breathe [rounds]` | A short guided breathing break |
+| `/coping <feeling>` | One small idea for a feeling, e.g. `/coping anxious` |
+| `/wellness` | Where you stand, and how to reach real help |
 | `/clear` | Start a fresh conversation (facts are kept) |
 | `/help`, `/quit` | Help / exit |
 
@@ -116,6 +130,7 @@ weather.
 | `--no-tools`, `--no-shell` | | Chat only / everything except commands |
 | `--memory-file`, `--no-memory` | `bmo_memory.json` | Where memory is saved / don't save anything |
 | `--max-history` | `60` | Messages of the conversation kept in memory (bigger = better recall, more tokens; `0` = keep none) |
+| `--wellness-file`, `--no-wellness` | `bmo_wellness.json` | Where moods/gratitude/journal are saved / turn the wellbeing side off |
 | `--sleep-after` | `5` | Minutes of quiet before BMO dozes off (`0` = never) |
 | `--system` | (BMO's personality) | Replace the personality prompt |
 | `--tts-test "text"` | | Test voice output alone and exit |
@@ -138,6 +153,13 @@ weather.
   be `http`/`https`.
 - **Memory** is a plain JSON file (`bmo_memory.json`) next to `bmo.py`. It is
   git-ignored, so it's never committed. Delete it to reset BMO.
+- **The wellbeing data** (moods, gratitude, journal) is a plain JSON file
+  (`bmo_wellness.json`) next to `bmo.py`, git-ignored and never sent
+  anywhere. It stays on your computer, and you can delete it any time to
+  wipe it. BMO is a supportive friend, not a doctor: it doesn't diagnose or
+  give medical advice, and if you sound like you're in real danger it shows
+  real crisis lines (988, text HOME to 741741, findahelpline.com) instead of
+  trying to handle it alone.
 
 ## Troubleshooting
 
@@ -155,8 +177,8 @@ weather.
 ## How it works
 
 `bmo.py` is one file, split into small classes: `Face`, `Speaker`,
-`Listener`, `WakeWord`, `Memory`, `Tools` and `Agent`, each running on its
-own thread. See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the
+`Listener`, `WakeWord`, `Memory`, `Wellness`, `Tools` and `Agent`, each
+running on its own thread. See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the
 full explanation. It covers the threads, what happens during one
 conversation turn, the tool loop, how the wake word avoids false alarms, and
 lessons learned about prompting small models.
@@ -168,6 +190,9 @@ lessons learned about prompting small models.
   `--model qwen3:4b` or `--model llama3.1:8b` (slower, needs more RAM).
 - Mood reactions come from keywords, so the face sometimes reacts to the
   wrong thing.
+- The wellbeing side is a friend, not a clinician: it can't assess risk,
+  and its coping tips are generic. It never replaces real support - see
+  `/wellness` for crisis lines.
 - Voice output uses Windows SAPI voices. On other systems `pyttsx3` falls
   back to espeak/NSSpeechSynthesizer, which is less tested.
 

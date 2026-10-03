@@ -4,6 +4,9 @@ __pycache__/
 # BMO's saved conversation and facts - personal data
 bmo_memory.json*
 
+# BMO's moods, gratitude log and journal - personal data
+bmo_wellness.json*
+
 # virtual environments
 .venv/
 venv/

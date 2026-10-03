@@ -14,6 +14,11 @@ type to OR talk to.
              commands on your computer.
   * Memory:  facts and the recent conversation are saved to bmo_memory.json,
              so BMO remembers you between runs (see /memory).
+  * Wellbeing: a gentle mental-health side - a daily mood tracker, a
+             gratitude log, a private journal, guided breathing and small
+             coping ideas - saved to bmo_wellness.json (see /wellness). It is
+             a supportive friend, not a therapist, and hands off to real
+             crisis lines when something serious comes up.
 
 Setup (Windows/macOS/Linux):
     1. Install Ollama (https://ollama.com) and:  ollama pull qwen2.5:3b
@@ -72,7 +77,51 @@ GREETINGS = [
 
 STATES = ["idle", "thinking", "speaking", "happy", "error", "waking", "listening",
           "surprised", "sad", "love", "confused", "remembering", "sleeping",
-          "wink", "working", "asking"]
+          "wink", "working", "asking", "concerned", "breathing"]
+
+# Mood tracking (see the Wellness class). A check-in is a 1-5 score with an
+# optional short note; the words are here so a typed or spoken answer like
+# "kind of a rough day" still lands on a number.
+MOOD_WORDS = [
+    (1, r"\b(awful|terrible|horrible|dreadful|miserable|rock bottom|"
+        r"cant (do|take) (this|it)|can'?t (do|take) (this|it)|"
+        r"the worst|despair\w*|hopeless)\b"),
+    (2, r"\b(bad|rough|low|down|sad|upset|anxious|anxiety|stressed|"
+        r"stress\w*|struggl\w*|hard day|down day|tough|worried|overwhelm\w*|"
+        r"not (great|good|okay|ok)|meh)\b"),
+    (3, r"\b(okay|ok|fine|alright|all right|so ?so|meh|neutral|"
+        r"getting by|surviving)\b"),
+    (4, r"\b(good|pretty good|better|decent|pleasant|calm|relaxed|"
+        r"content|nice|okay actually)\b"),
+    (5, r"\b(great|amazing|wonderful|fantastic|excellent|awesome|"
+        r"thrilled|happy|joyful|excited|over the moon|on top of the world|"
+        r"really good|so good)\b"),
+]
+
+MOOD_LABELS = {1: "rough", 2: "low", 3: "okay", 4: "good", 5: "great"}
+
+# Kept in the user's own words, but the model should never pathologise or
+# diagnose. This is a friend noticing and checking in, not a clinician.
+CRISIS_PATTERNS = [
+    r"\bkill myself\b", r"\bkilling myself\b", r"\bend (it|my life)\b",
+    r"\bend things\b", r"\bsuicid\w*", r"\bself[- ]?harm\w*",
+    r"\bcut(ting)? myself\b", r"\bhurt myself\b", r"\bdon'?t want to "
+    r"(be here|live|exist)\b", r"\bwant to die\b", r"\bcan'?t go on\b",
+    r"\bno reason to live\b", r"\bbetter off dead\b",
+]
+
+CRISIS_REPLY = (
+    "I'm really glad you told me, and I'm here with you. But I'm just a "
+    "little friend on your screen - I can't keep you safe on my own, and "
+    "you deserve someone who can.\n"
+    "    Please reach out to one of these, right now if you can:\n"
+    "      - Call or text 988 (Suicide & Crisis Lifeline, US/Canada)\n"
+    "      - Text HOME to 741741 (Crisis Text Line)\n"
+    "      - Anywhere else: https://findahelpline.com\n"
+    "      - In an emergency, call your local emergency number (911/112)\n"
+    "    If you can, tell someone you trust and let them sit with you. "
+    "You matter, and this feeling isn't forever."
+)
 
 # How BMO reacts after a reply: the first pattern that matches the user's
 # words (or, failing that, BMO's reply) picks the face. Otherwise: happy.
@@ -176,6 +225,8 @@ STATE_FACES = {
     "wink": "playful_wink",
     "working": "blank_expression",
     "asking": "worried_surprise",
+    "concerned": "worried",
+    "breathing": "peaceful",
 }
 
 # Idle slowly drifts between these calm faces so BMO still feels alive, while
@@ -501,7 +552,8 @@ class Face:
             "waking": "waking up...", "listening": "listening...",
             "sleeping": "zzz...", "remembering": "remembering...",
             "wink": "happy", "working": "working...",
-            "asking": "yes or no?"}.get(st, st)
+            "asking": "yes or no?", "concerned": "i'm here",
+            "breathing": "breathe with me..."}.get(st, st)
         c.create_text(w / 2, h * 0.93, text=caption, fill=INK,
                       font=("Helvetica", 11, "bold"))
 
@@ -1142,6 +1194,35 @@ def chime():
         pass
 
 
+def breathe(face, rounds=4, inhale=4, hold=4, exhale=4, say=None):
+    """Guided box breathing, on the main-ish thread: a soft chime and a
+    printed cue for each phase ('breathe in... hold... breathe out...'), and
+    the face holds its calm 'breathing' state. Works with no voice at all -
+    the terminal is the guide. Returns after `rounds` cycles."""
+    face.set_state("breathing")
+    print("\n[breathing] Let's take a few slow breaths together. Follow the "
+          "words (or just listen to the chimes).")
+    for r in range(rounds):
+        for label, secs, tone in (("breathe in", inhale, 660),
+                                  ("hold", hold, 880),
+                                  ("breathe out", exhale, 440)):
+            if say:
+                say(f"{label}")
+            chime_soft(tone)
+            print(f"  {label}... ({secs}s)   round {r + 1}/{rounds}")
+            time.sleep(secs)
+    print("[breathing] Nice. Notice how that feels, even a little.\n")
+
+
+def chime_soft(freq):
+    """A single soft beep for the breathing cues (Windows only)."""
+    try:
+        import winsound
+        winsound.Beep(int(freq), 60)
+    except Exception:
+        pass
+
+
 # ------------------------------------------------------------------ memory
 class Memory:
     """What BMO remembers between runs: the recent conversation plus a list
@@ -1248,6 +1329,294 @@ class Memory:
                 + "\n".join(f"- {self.third_person(f)}" for f in self.facts))
 
 
+# ----------------------------------------------------------------- wellness
+class Wellness:
+    """BMO's gentle mental-health side: a daily mood tracker, a gratitude
+    log, a private journal, and guided breathing. Backed by one JSON file so
+    entries survive restarts, and written the same careful way Memory is
+    (temp file, then replace, so a crash can't corrupt it).
+
+    This is a supportive friend, not a therapist: it notices, reflects and
+    offers small coping ideas, and hands off to real crisis lines when
+    something serious comes up (see CRISIS_PATTERNS)."""
+
+    MAX_ENTRIES = 400              # trim oldest check-ins beyond this
+
+    # One small, concrete thing to try. Picked to match the feeling, never
+    # presented as a cure - just an option ("want to try...?").
+    COPING = {
+        "anxious": ["a slow box-breath (try /breathe)", "the 5-4-3-2-1 "
+                    "grounding trick (name 5 things you can see, 4 you can "
+                    "touch, 3 you can hear, 2 you can smell, 1 you can "
+                    "taste)", "splashing cold water on your face or holding "
+                    "something cold"],
+        "sad": ["getting some daylight or a short walk", "texting one "
+                "person who makes you feel safe", "putting on one song you "
+                "loved when you were younger"],
+        "angry": ["moving your body hard for two minutes", "slow breathing "
+                  "with a longer out-breath (in for 4, out for 6)", "writing "
+                  "the unedited version in /journal, then closing it"],
+        "tired": ["a real break - water, a stretch, five minutes away from "
+                  "screens", "lowering the bar for the rest of today on "
+                  "purpose"],
+        "lonely": ["sending one small message to someone ('hey, thinking of "
+                   "you')", "going somewhere with other people nearby - a "
+                   "cafe, a library, a park"],
+        "overwhelmed": ["picking just the very next tiny step, nothing "
+                        "further", "writing everything down so it's out of "
+                        "your head (or /journal it)", "naming the one thing "
+                        "that actually has to happen today"],
+        "default": ["a glass of water and a few slow breaths", "naming out "
+                    "loud what you're feeling - actually saying it helps",
+                    "a two-minute break with no screens"],
+    }
+    # words -> a COPING key
+    FEELING_WORDS = [
+        ("anxious", r"\b(anxious|anxiety|panic\w*|nervous|worried|scared|"
+                    r"afraid|on edge|overthink\w*|restless)\b"),
+        ("sad", r"\b(sad|down|low|depress\w*|crying|cry|miserable|hurt|"
+                r"lonely|alone|grief|loss|miss\w*)\b"),
+        ("angry", r"\b(angry|mad|furious|irritat\w*|frustrat\w*|annoy\w*|"
+                  r"rage|unfair|resent\w*)\b"),
+        ("tired", r"\b(tired|exhaust\w*|burn\w* ?out|drained|no energy|"
+                  r"can'?t sleep|insomnia|weary|worn out)\b"),
+        ("overwhelmed", r"\b(overwhelm\w*|too much|can'?t cope|drowning|"
+                        r"stressed|stress|burnt out|burned out|spinning)\b"),
+        ("lonely", r"\b(lonely|alone|no ?one|isolat\w*|left out|unloved)\b"),
+    ]
+
+    def __init__(self, path, name="BMO"):
+        self.path = path            # None = keep entries only for this run
+        self.name = name
+        self.moods = []             # [{date, time, day, score, note}]
+        self.gratitude = []         # [{date, text}]
+        self.journal = []           # [{date, time, text}]
+        self.last_prompt_day = None   # the day we last asked for a check-in
+        self._lock = threading.Lock()
+        if path and os.path.exists(path):
+            self._load()
+
+    # ---- storage ----
+    def _load(self):
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                data = json.load(f)
+            self.moods = [e for e in data.get("moods", [])
+                          if isinstance(e, dict) and "score" in e]
+            self.gratitude = [e for e in data.get("gratitude", [])
+                              if isinstance(e, dict) and e.get("text")]
+            self.journal = [e for e in data.get("journal", [])
+                            if isinstance(e, dict) and e.get("text")]
+            self.last_prompt_day = data.get("last_prompt_day")
+        except (OSError, ValueError, AttributeError) as e:
+            broken = self.path + ".broken"
+            try:
+                os.replace(self.path, broken)
+            except OSError:
+                broken = None
+            print(f"[!] Couldn't read wellness file ({e}). Starting fresh"
+                  + (f"; old file kept as {broken}" if broken else "") + ".")
+
+    def save(self):
+        if not self.path:
+            return
+        with self._lock:
+            data = {"moods": self.moods[-self.MAX_ENTRIES:],
+                    "gratitude": self.gratitude[-self.MAX_ENTRIES:],
+                    "journal": self.journal[-self.MAX_ENTRIES:],
+                    "last_prompt_day": self.last_prompt_day}
+            tmp = self.path + ".tmp"
+            try:
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+                os.replace(tmp, self.path)
+            except OSError as e:
+                print(f"\n[!] Couldn't save wellness file: {e}")
+
+    # ---- helpers ----
+    @staticmethod
+    def parse_score(text):
+        """A mood score 1-5 out of what the user typed/said, or None.
+        Numbers win ('4', 'mood 4 out of 5'); otherwise the words in
+        MOOD_WORDS are checked, warmest feeling first."""
+        t = (text or "").strip().lower()
+        if not t:
+            return None
+        m = re.search(r"\b([1-5])(?:\s*(?:/|out of)\s*5)?\b", t)
+        if m:
+            return int(m.group(1))
+        for score, pat in reversed(MOOD_WORDS):     # 5 first, then down
+            if re.search(pat, t):
+                return score
+        return None
+
+    @staticmethod
+    def is_crisis(text):
+        return bool(text) and any(re.search(p, text, re.I)
+                                  for p in CRISIS_PATTERNS)
+
+    def feeling(self, text):
+        """Which COPING key fits a free-text feeling (for coping tips)."""
+        for key, pat in self.FEELING_WORDS:
+            if re.search(pat, text or "", re.I):
+                return key
+        return "default"
+
+    # ---- mood tracker ----
+    def log_mood(self, text="", when=None):
+        """Save one check-in. `text` may hold a score and/or a note, e.g.
+        '4', 'pretty good', '2 - long day'. Returns a friendly summary line,
+        or None if no score/note could be found."""
+        text = (text or "").strip()
+        score = self.parse_score(text)
+        # the note is whatever is left once any leading score is removed
+        note = re.sub(r"^[\s\-:]*\b[1-5]\b(?:\s*(?:/|out of)\s*5)?[\s\-:]*",
+                      "", text).strip() if score else text
+        if score is None and not note:
+            return None
+        now = time.localtime(when if when else time.time())
+        entry = {"date": time.strftime("%Y-%m-%d", now),
+                 "time": time.strftime("%H:%M", now),
+                 "day": time.strftime("%A", now),
+                 "score": score,
+                 "note": note[:280]}
+        self.moods.append(entry)
+        self.moods = self.moods[-self.MAX_ENTRIES:]
+        self.last_prompt_day = entry["date"]
+        self.save()
+        return self.describe(entry)
+
+    @staticmethod
+    def describe(entry):
+        """'Mood today: good (4/5)' plus the note, if any."""
+        s = entry.get("score")
+        label = MOOD_LABELS.get(s, "noted") if s else "noted"
+        head = f"Mood {entry['date']}: {label}" + (f" ({s}/5)" if s else "")
+        return head + (f" - {entry['note']}" if entry.get("note") else "")
+
+    def recent_moods(self, n=7):
+        return self.moods[-n:]
+
+    def _streak(self):
+        """How many days in a row (ending today/yesterday) there's a check-in."""
+        days = sorted({e["date"] for e in self.moods})
+        if not days:
+            return 0
+        today = time.strftime("%Y-%m-%d")
+        yest = time.strftime("%Y-%m-%d", time.localtime(time.time() - 86400))
+        if days[-1] not in (today, yest):
+            return 0
+        streak = 1
+        for i in range(len(days) - 1, 0, -1):
+            d0 = time.mktime(time.strptime(days[i], "%Y-%m-%d"))
+            d1 = time.mktime(time.strptime(days[i - 1], "%Y-%m-%d"))
+            if round((d0 - d1) / 86400) == 1:
+                streak += 1
+            else:
+                break
+        return streak
+
+    def mood_summary(self, n=7):
+        """A few plain lines about the last n check-ins - a tiny trend,
+        never a diagnosis."""
+        recent = self.recent_moods(n)
+        if not recent:
+            return ("I don't have any mood check-ins yet. Try typing a number "
+                    "1-5 (1 = rough, 5 = great), or just say how today felt.")
+        scored = [e["score"] for e in recent if e["score"]]
+        lines = [f"Last {len(recent)} check-in(s):"]
+        for e in recent:
+            label = MOOD_LABELS.get(e["score"], "-") if e["score"] else "-"
+            bar = "#" * (e["score"] or 0)
+            lines.append(f"  {e['date']} ({e['day'][:3]})  {label:<5} "
+                         f"{bar:<5} "
+                         + (e["note"] if e["note"] else ""))
+        if scored:
+            avg = sum(scored) / len(scored)
+            lines.append(f"  average {avg:.1f}/5 over {len(scored)} scored "
+                         f"day(s)")
+        streak = self._streak()
+        if streak:
+            lines.append(f"  {streak}-day check-in streak - nice going.")
+        return "\n".join(lines)
+
+    def should_check_in(self):
+        """True if BMO should gently ask for today's mood: no check-in yet
+        today, and it hasn't already asked today."""
+        today = time.strftime("%Y-%m-%d")
+        if any(e["date"] == today for e in self.moods):
+            return False
+        return self.last_prompt_day != today
+
+    def mark_prompted(self):
+        self.last_prompt_day = time.strftime("%Y-%m-%d")
+        self.save()
+
+    def context(self):
+        """A short wellness note for the system prompt, so BMO can refer to
+        the user's recent moods naturally. Empty if there's nothing yet."""
+        if not self.moods and not self.gratitude:
+            return ""
+        bits = []
+        recent = self.recent_moods(5)
+        scored = [e["score"] for e in recent if e["score"]]
+        if scored:
+            avg = sum(scored) / len(scored)
+            bits.append(f"their last {len(scored)} mood check-in(s) averaged "
+                        f"{avg:.1f}/5")
+        if self.moods and self.moods[-1].get("note"):
+            bits.append(f"their latest note was \"{self.moods[-1]['note']}\"")
+        if self.gratitude:
+            bits.append(f"they've logged {len(self.gratitude)} gratitude "
+                        "note(s)")
+        if not bits:
+            return ""
+        return ("\n\nSomething you quietly keep track of for the user: "
+                + "; ".join(bits) + ". You can mention it gently if it fits, "
+                "but never nag about it or bring it up out of nowhere.")
+
+    # ---- gratitude + journal ----
+    def add_gratitude(self, text):
+        text = (text or "").strip()
+        if not text:
+            return None
+        self.gratitude.append({"date": time.strftime("%Y-%m-%d"), "text": text[:280]})
+        self.save()
+        return text
+
+    def add_journal(self, text):
+        text = (text or "").strip()
+        if not text:
+            return None
+        now = time.localtime()
+        self.journal.append({"date": time.strftime("%Y-%m-%d", now),
+                             "time": time.strftime("%H:%M", now),
+                             "text": text[:2000]})
+        self.journal = self.journal[-self.MAX_ENTRIES:]
+        self.save()
+        return text
+
+    # ---- coping suggestions (plain rules, no model needed) ----
+    def suggest(self, feeling_text=""):
+        key = self.feeling(feeling_text)
+        ideas = self.COPING.get(key, self.COPING["default"])
+        pick = random.choice(ideas)
+        lead = {"anxious": "That tight, racing feeling is really hard.",
+                "sad": "That sounds heavy.",
+                "angry": "That would wind anyone up.",
+                "tired": "Sounds like you're running on empty.",
+                "overwhelmed": "Yeah, that's a lot to carry at once.",
+                "lonely": "That's a hard place to be in.",
+                "default": "Thanks for telling me."}.get(key, "Thanks for telling me.")
+        return f"{lead} Want to try {pick}?"
+
+    @staticmethod
+    def is_negative(text):
+        """True for low/anxious wording - used to decide on a caring face."""
+        return any(re.search(p, text or "", re.I)
+                   for _, p in MOOD_WORDS if _ <= 2)
+
+
 # ------------------------------------------------------------------- tools
 def _tool(tool_name, description, /, **params):
     """Build an Ollama tool schema. params: name=(type, description)."""
@@ -1297,11 +1666,17 @@ class Tools:
         "run_command. Never write a command in your reply or ask for "
         "permission yourself: just call run_command, and the app will ask "
         "the user. For normal chat, answer without tools. Always reply in "
-        "English unless the user writes in another language.")
+        "English unless the user writes in another language. When the user "
+        "shares how they're feeling or something hard that happened, do NOT "
+        "reach for a tool first - just respond warmly like a friend. Use "
+        "log_mood only when they clearly give a mood to record, and "
+        "suggest_coping only if they seem to want help settling a feeling "
+        "(never for ordinary sadness - sometimes they just want to be heard).")
 
-    def __init__(self, face, allow_shell=True):
+    def __init__(self, face, allow_shell=True, wellness=None):
         self.face = face
         self.allow_shell = allow_shell
+        self.wellness = wellness
         # real paths, so the model doesn't invent C:\Users\YourUsername
         home = os.path.expanduser("~")
         desktop = next((d for d in (os.path.join(home, "OneDrive", "Desktop"),
@@ -1336,6 +1711,21 @@ class Tools:
                 "Run a shell command on the user's computer and get its "
                 "output. The user is asked to approve it first.",
                 command=("string", "the command to run")))
+        if wellness is not None:
+            self.funcs["log_mood"] = self.log_mood
+            self.funcs["suggest_coping"] = self.suggest_coping
+            self.schemas += [
+                _tool("log_mood", "Record the user's mood in their daily "
+                      "mood tracker. Use only when they clearly say how "
+                      "they're feeling.",
+                      mood=("string", "their mood, e.g. '4', 'pretty good', "
+                                      "or '2 - rough day'")),
+                _tool("suggest_coping", "Offer one small, concrete coping "
+                      "idea when the user wants help settling a hard "
+                      "feeling. Not for ordinary sadness.",
+                      feeling=("string", "how they're feeling, in their "
+                                         "words")),
+            ]
         self.schemas_by_name = {s["function"]["name"]: s["function"]
                                 for s in self.schemas}
 
@@ -1453,6 +1843,25 @@ class Tools:
                          f"chance of rain {noon['chanceofrain']}%")
         return "\n".join(lines) + self.SPOKEN
 
+    def log_mood(self, mood=""):
+        """Wellness tool: save a mood check-in."""
+        summary = self.wellness.log_mood(mood)
+        if summary is None:
+            return ("Couldn't find a mood (1-5) in that. Ask the user how "
+                    "they're feeling, in their own words.")
+        self.face.set_state("concerned", hold=3)
+        print(f"[mood logged: {summary}]")
+        return (f"Saved: {summary}. Acknowledge it warmly in one short "
+                "sentence - don't repeat the number back like a form.")
+
+    def suggest_coping(self, feeling=""):
+        """Wellness tool: one small coping idea for how they feel."""
+        tip = self.wellness.suggest(feeling)
+        self.face.set_state("concerned", hold=3)
+        print(f"[coping suggestion: {tip}]")
+        return (tip + self.SPOKEN + " Offer it as an option, not an "
+                "instruction, and keep it kind.")
+
     def open_website(self, url=""):
         url = url.strip()
         if not re.match(r"https?://", url, re.I):
@@ -1511,12 +1920,13 @@ class Agent:
     MAX_TOOL_ROUNDS = 4     # tool calls BMO may chain before it must answer
 
     def __init__(self, face, model, host, name, system, speaker, listener,
-                 memory, tools=None, convo=False):
+                 memory, tools=None, convo=False, wellness=None):
         self.face, self.model, self.host, self.name = face, model, host, name
         self.system = system
         self.speaker = speaker
         self.listener = listener
         self.memory = memory
+        self.wellness = wellness        # None = mental-health support off
         self.tools = tools              # None = chat only
         self.wake = None                # WakeWord detector, if on
         self.awaiting_answer = False    # a yes/no question is open
@@ -1559,6 +1969,48 @@ class Agent:
         if self.memory.remember(m.group(2)):
             self.just_remembered = True
             print(f"[remembered: {self.memory.facts[-1]}]")
+
+    # ---- mental-health support ----
+    def _crisis(self, text):
+        """True if what the user said sounds like a crisis. When it does, BMO
+        stops being clever, says the human reply from CRISIS_REPLY, and does
+        not hand it to the model to improvise around."""
+        return self.wellness is not None and self.wellness.is_crisis(text)
+
+    def _say_crisis(self, voice=False):
+        """Deliver the fixed, careful crisis reply (spoken or printed)."""
+        self.face.set_state("concerned", hold=8)
+        print(f"\n{self.name}> ")
+        for line in CRISIS_REPLY.splitlines():
+            print(line)
+        self.history += [{"role": "user",
+                          "content": "(the user may be in crisis)"},
+                         {"role": "assistant",
+                          "content": "I'm here with you. Please reach out to "
+                          "988 (call/text), text HOME to 741741, or "
+                          "findahelpline.com - and tell someone you trust. "
+                          "You matter."}]
+        if self.speaker.active and not voice:
+            for sentence in CRISIS_REPLY.splitlines()[:3]:
+                if sentence.strip():
+                    self.speaker.say(self._clean_for_speech(sentence))
+            self.speaker.wait_done()
+        self.memory.save()
+
+    def _wellness_offer(self, voice=False):
+        """A gentle first-message nudge: if there's no check-in today, BMO
+        quietly invites one. Never pushy, and easy to ignore."""
+        w = self.wellness
+        if w is None or not w.should_check_in():
+            return
+        w.mark_prompted()
+        line = ("By the way, how's your day going? A 1-5 is plenty - "
+                "1 is rough, 5 is great. (/mood logs it, /moods shows the "
+                "trend)")
+        print(f"\n{self.name}> {line}")
+        if self.speaker.active:
+            self.speaker.say(self._clean_for_speech(
+                "By the way, how's your day going?"))
 
     # ---- startup ----
     def warm_up(self):
@@ -1655,6 +2107,12 @@ class Agent:
         self.busy = True
         self.cancel.clear()
         self.just_remembered = False
+        if self._crisis(user_text):
+            # Something serious: don't let the model improvise around it.
+            self._say_crisis(voice)
+            self.busy = False
+            self.memory.save()
+            return
         self._check_remember(user_text)
         self.history.append({"role": "user", "content": user_text})
         self.history = self.memory.trim()
@@ -1662,6 +2120,7 @@ class Agent:
         system = self.memory.system_prompt(
             f"Your name is {self.name}. It is now {now}. " + self.system
             + (self.tools.PROMPT if self.tools else "")
+            + (self.wellness.context() if self.wellness else "")
             # small models copy an example far better than they follow a rule
             + f"\n\nStay in character as {self.name}: you have your own likes, "
             "feelings and opinions, and never say you are an AI or a program. "
@@ -1734,6 +2193,11 @@ class Agent:
                 if not self.cancel.is_set():
                     mood = ("remembering" if self.just_remembered
                             else pick_mood(user_text, " ".join(reply)))
+                    # if the user sounded low, sit with them instead of
+                    # flashing a cheerful face back at them
+                    if (mood not in ("sad", "love") and self.wellness
+                            and self.wellness.is_negative(user_text)):
+                        mood = "concerned"
                     self.face.set_state(mood, hold=2.5)
         except urllib.error.HTTPError as e:
             self.face.set_state("error", hold=4)
@@ -1962,11 +2426,102 @@ HELP = """commands:
   /remember <x>   remember a fact for good (or just say "remember that ...")
   /forget <n>     forget fact number n       /forget all   forget every fact
   /clear          forget the conversation (facts are kept)
+  -- how you're doing --
+  /mood <1-5>     log today's mood, with an optional note: /mood 4 - good day
+  /moods          show recent mood check-ins and a little trend
+  /grateful <x>   jot down one good thing (a small daily gratitude)
+  /gratitude      show the gratitude notes you've saved
+  /journal <x>    write a private note for yourself      /journal   read them
+  /breathe        a short guided breathing break (/breathe 6 for 6 rounds)
+  /coping [x]     one small idea for a feeling, e.g. /coping anxious
+  /wellness       where you stand, and how to get real help if you need it
   /help           show this
   /quit           exit
 tip: ESC in the face window (or another click) interrupts BMO mid-sentence.
      BMO always asks before running a command - answer y/n (or say yes/no,
      or press Y/N in the face window when you're talking by voice)."""
+
+
+def wellness_commands(agent, face, line):
+    """Handle the /mood, /moods, /grateful, /gratitude, /journal, /breathe,
+    /coping and /wellness commands. Returns True if `line` was one of them."""
+    w = agent.wellness
+    if w is None:
+        if re.match(r"^/(moods?|grateful|gratitude|journal|breathe|coping|"
+                    r"wellness)\b", line):
+            print("(mental-health support is off - started with --no-wellness)")
+            return True
+        return False
+
+    if line.startswith("/mood "):
+        summary = w.log_mood(line[len("/mood "):])
+        if summary is None:
+            print("usage: /mood <1-5> [- note]     e.g. /mood 4 - good day")
+        else:
+            face.set_state("concerned" if (w.moods[-1]["score"] or 3) <= 2
+                           else "happy", hold=3)
+            print(f"({summary})")
+            if (w.moods[-1]["score"] or 3) <= 2:
+                print("  thanks for telling me. " + w.suggest(w.moods[-1]["note"]))
+    elif line == "/moods":
+        print(w.mood_summary())
+    elif line.startswith("/grateful"):
+        text = line[len("/grateful"):].strip()
+        if not text:
+            print("usage: /grateful <one good thing about today>")
+        else:
+            w.add_gratitude(text)
+            face.set_state("happy", hold=2.5)
+            print(f"(saved - that's {len(w.gratitude)} gratitude note(s) now)")
+    elif line == "/gratitude":
+        if not w.gratitude:
+            print("(nothing yet - try: /grateful the sun was out)")
+        else:
+            for e in w.gratitude[-14:]:
+                print(f"  {e['date']}  {e['text']}")
+    elif line.startswith("/journal"):
+        text = line[len("/journal"):].strip()
+        if not text:
+            if not w.journal:
+                print("(your journal is empty - /journal <something> writes "
+                      "a private note)")
+            else:
+                for e in w.journal[-10:]:
+                    print(f"  [{e['date']} {e['time']}] {e['text']}")
+        else:
+            w.add_journal(text)
+            print("(saved to your journal - it stays on this computer)")
+    elif line.startswith("/breathe"):
+        arg = line[len("/breathe"):].strip()
+        rounds = int(arg) if arg.isdigit() and 1 <= int(arg) <= 20 else 4
+        say = (lambda s: agent.speaker.say(s)) if agent.speaker.active else None
+        breathe(face, rounds=rounds, say=say)
+        face.set_state("idle")
+    elif line.startswith("/coping"):
+        feeling = line[len("/coping"):].strip()
+        if not feeling:
+            print("usage: /coping <how you feel>     "
+                  "e.g. /coping anxious, /coping overwhelmed")
+        else:
+            face.set_state("concerned", hold=3)
+            print(w.suggest(feeling))
+    elif line == "/wellness":
+        print("  here's where things stand for you:")
+        print(w.mood_summary())
+        print(f"  gratitude notes: {len(w.gratitude)}   "
+              f"journal entries: {len(w.journal)}")
+        print(f"  saved in: {w.path}" if w.path
+              else "  (not saved - started with --no-wellness)")
+        print("\n  one thing to remember: I'm a friend, not a doctor or a "
+              "therapist,\n  and I can't keep you safe on my own.")
+        print("  If things ever feel really heavy, please reach out:")
+        print("    988 (call/text, US/Canada) - or text HOME to 741741 - "
+              "or https://findahelpline.com")
+        print("  You don't have to be at a breaking point to use those. "
+              "They're there for\n  the hard days too.")
+    else:
+        return False
+    return True
 
 
 def cli_loop(agent, face):
@@ -1977,6 +2532,11 @@ def cli_loop(agent, face):
         print(f"(I remember {len(mem.facts)} fact(s) and {len(mem.history)} "
               "message(s) from last time - /memory to see, /clear to start "
               "a fresh conversation)\n")
+    w = agent.wellness
+    if w is not None and w.should_check_in():
+        # gentle, once-a-day invitation - easy to ignore, never a nag
+        agent._wellness_offer()
+        print()
     while not face.quit_requested:
         try:
             line = input(PROMPT).strip()
@@ -2062,6 +2622,8 @@ def cli_loop(agent, face):
                 face.set_state(parts[1], hold=None if parts[1] == "idle" else 4)
             else:
                 print("faces: " + " ".join(STATES))
+        elif wellness_commands(agent, face, line):
+            pass
         else:
             agent.say(line)
     face.quit()
@@ -2111,6 +2673,15 @@ def main():
                     help="how many messages of the conversation to keep in "
                          "memory (default 60; bigger = better recall but more "
                          "tokens, 0 = keep none)")
+    ap.add_argument("--wellness-file",
+                    default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                         "bmo_wellness.json"),
+                    help="where the mood tracker, gratitude log and journal "
+                         "are saved (default: bmo_wellness.json next to "
+                         "bmo.py)")
+    ap.add_argument("--no-wellness", action="store_true",
+                    help="turn off the mental-health support (mood tracker, "
+                         "journal, breathing, coping tips)")
     ap.add_argument("--no-tools", action="store_true",
                     help="chat only: no web search, apps or commands")
     ap.add_argument("--no-shell", action="store_true",
@@ -2138,6 +2709,11 @@ def main():
             "cheering up. You don't need to be upbeat all the time - being a "
             "steady, quiet presence on a bad day is more you than forced "
             "positivity.\n\n"
+            "You're a friend, not a doctor: you can listen, sit with a hard "
+            "feeling, and offer a small idea, but you never diagnose, give "
+            "medical advice, or pretend to be a therapist. If someone seems "
+            "in real danger, gently point them to real people who can help "
+            "(the app shows the right numbers).\n\n"
             "Keep most replies short, like a real conversation (1-3 "
             "sentences), since they're read aloud. Give yourself a little more "
             "room only when someone needs to feel heard, never for explaining "
@@ -2238,9 +2814,13 @@ def main():
                 Listener(face, args.stt_model, mic, hotwords=args.name))
     memory = Memory(None if args.no_memory else args.memory_file,
                     max_history=args.max_history)
-    tools = None if args.no_tools else Tools(face, allow_shell=not args.no_shell)
+    wellness = (None if args.no_wellness else
+                Wellness(args.wellness_file, name=args.name))
+    tools = (None if args.no_tools else
+             Tools(face, allow_shell=not args.no_shell, wellness=wellness))
     agent = Agent(face, args.model, args.host, args.name, args.system,
-                  speaker, listener, memory, tools=tools, convo=args.convo)
+                  speaker, listener, memory, tools=tools, convo=args.convo,
+                  wellness=wellness)
     if listener is not None and not args.no_wake:
         agent.wake = WakeWord(agent, listener, args.wake_model,
                               debug=args.wake_debug)
